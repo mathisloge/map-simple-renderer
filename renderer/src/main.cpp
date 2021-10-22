@@ -71,7 +71,7 @@ struct RenderEntry
     int x, y, z;
 };
 using Queue = bounded_buffer<RenderEntry>;
-class RenderThread
+class RenderThread final
 {
   public:
     RenderThread(int renderer_id, const fs::path &xml_file, Queue &queue, int w, int h)
@@ -100,14 +100,21 @@ class RenderThread
         {
             RenderEntry e;
             queue_.pop_back(&e);
-            render_tile(e.tile_path, e.x, e.y, e.z);
+            try
+            {
+                render_tile(e.tile_path, e.x, e.y, e.z);
+            }
+            catch (const std::exception &ex)
+            {
+                spdlog::error("Error while rendering tile {} {} {}: {}", e.x, e.y, e.z, ex.what();)
+            }
         }
         spdlog::info("renderer {} finished", renderer_id_);
     }
 
     void render_tile(const fs::path &tile_uri, int x, int y, int z)
     {
-        spdlog::info("rendering {} {} {}", z, x, y);
+        spdlog::info("{}: rendering {} {} {}", renderer_id_, z, x, y);
         const std::pair<double, double> p0 = {x * 256., (y + 1) * 256.};
         const std::pair<double, double> p1 = {(x + 1.) * 256., y * 256.};
         const auto l0 = tileproj_.fromPixelToLL(p0, z);
@@ -139,70 +146,113 @@ class RenderThread
     GoogleProjection tileproj_;
     std::thread render_thread_;
 };
-
-static void render_tiles(const mapnik::box2d<double> bbox,
-                         const fs::path &xml_file,
-                         const fs::path &tile_dir,
-                         int min_zoom,
-                         int max_zoom,
-                         int num_threads)
+struct BboxRenderJob
 {
-    spdlog::info("creating {} render threads", num_threads);
-    Queue queue{100};
+    const mapnik::box2d<double> bbox;
+    int min_zoom;
+    int max_zoom;
+};
+class TileRenderer final
+{
+    Queue queue;
     std::vector<std::unique_ptr<RenderThread>> renderers;
-    for (int i = 0; i < num_threads; i++)
-        renderers.emplace_back(std::make_unique<RenderThread>(i, xml_file, queue, 256, 256));
+    const fs::path tile_dir_;
+    std::vector<BboxRenderJob> render_jobs_;
 
-    const GoogleProjection gprj{max_zoom + 1};
-
-    const std::pair<double, double> ll0{bbox[0], bbox[3]};
-    const std::pair<double, double> ll1{bbox[2], bbox[1]};
-
-    if (!fs::exists(tile_dir))
-        fs::create_directory(tile_dir);
-
-    spdlog::info("start rendering...", num_threads);
-    for (int z = min_zoom; z <= max_zoom; z++)
+  public:
+    TileRenderer(const fs::path &xml_file, const fs::path &tile_dir, int num_threads)
+        : tile_dir_{tile_dir}
+        , queue{100}
     {
-        const fs::path z_dir = tile_dir / std::to_string(z);
-        if (!fs::exists(z_dir))
-            fs::create_directory(z_dir);
-        const auto px0 = gprj.fromLLtoPixel(ll0, z);
-        const auto px1 = gprj.fromLLtoPixel(ll1, z);
-        const int min_x = (px0.first / 256.0);
-        const int max_x = (px1.first / 256.0) + 1;
-        for (int x = min_x; x <= max_x; x++)
-        {
-            const double zpow = z * z;
-            if ((x < 0) || (x >= zpow))
-                continue;
-            const fs::path x_dir = z_dir / std::to_string(x);
-            if (!fs::exists(x_dir))
-                fs::create_directory(x_dir);
-            const int min_y = (px0.second / 256.0);
-            const int max_y = (px1.second / 256.0) + 1;
-            for (int y = min_y; y <= max_y; y++)
-            {
-                if ((y < 0) || (y >= zpow))
-                    continue;
-                const fs::path tile_uri{tile_dir / std::to_string(z) / std::to_string(x) /
-                                        (std::to_string(y) + ".png")};
+        spdlog::info("creating {} render threads", num_threads);
+        for (int i = 0; i < num_threads; i++)
+            renderers.emplace_back(std::make_unique<RenderThread>(i, xml_file, queue, 256, 256));
+    }
 
-                queue.push_front(RenderEntry{tile_uri, x, y, z});
+    ~TileRenderer()
+    {
+        renderers.clear();
+    }
+
+    void render_tiles(const mapnik::box2d<double> bbox, int min_zoom, int max_zoom)
+    {
+        render_jobs_.emplace_back(BboxRenderJob{bbox, min_zoom, max_zoom});
+    }
+
+    void run()
+    {
+        for (const auto &job : render_jobs_)
+            process(job);
+        spdlog::info("All queued.");
+    }
+
+  private:
+    void process(const BboxRenderJob &job)
+    {
+        const GoogleProjection gprj{job.max_zoom + 1};
+
+        const std::pair<double, double> ll0{job.bbox[0], job.bbox[3]};
+        const std::pair<double, double> ll1{job.bbox[2], job.bbox[1]};
+
+        if (!fs::exists(tile_dir_))
+            fs::create_directory(tile_dir_);
+
+        spdlog::info("start rendering processing {}-{}", job.min_zoom, job.max_zoom);
+        for (int z = job.min_zoom; z <= job.max_zoom; z++)
+        {
+            const double zpow = std::pow(2, z);
+            const fs::path z_dir = tile_dir_ / std::to_string(z);
+            if (!fs::exists(z_dir))
+                fs::create_directory(z_dir);
+            const auto px0 = gprj.fromLLtoPixel(ll0, z);
+            const auto px1 = gprj.fromLLtoPixel(ll1, z);
+            const int min_x = (px0.first / 256.0);
+            const int max_x = (px1.first / 256.0) + 1;
+            for (int x = min_x; x <= max_x; x++)
+            {
+                const int min_y = (px0.second / 256.0);
+                const int max_y = (px1.second / 256.0) + 1;
+                if ((x < 0) || (x >= zpow))
+                    continue;
+                const fs::path x_dir = z_dir / std::to_string(x);
+                if (!fs::exists(x_dir))
+                    fs::create_directory(x_dir);
+
+                for (int y = min_y; y <= max_y; y++)
+                {
+                    if ((y < 0) || (y >= zpow))
+                        continue;
+                    const fs::path tile_uri{tile_dir_ / std::to_string(z) / std::to_string(x) /
+                                            (std::to_string(y) + ".png")};
+                    if (!fs::exists(tile_uri))
+                    {
+                        spdlog::info("adding tile {} {} {}", z, x, y);
+                        queue.push_front(RenderEntry{tile_uri, x, y, z});
+                    }
+                    else
+                        spdlog::info("skipping tile {} {} {}", z, x, y);
+                }
             }
         }
     }
-}
+};
 
 int main(int argc, char const *argv[])
 {
     const fs::path xml_file = "D:/dev/openstreetmap-carto/mapnik.xml";
-    const fs::path out_dir = "tiles";
+    const fs::path out_dir = "D:/dev/map-simple-renderer/build/windows-64-default-release/server/websrc/tiles";
     mapnik::datasource_cache::instance().register_datasources(MAPNIK_PLUGINS_DIR);
     mapnik::freetype_engine::register_fonts("./fonts", true);
+    constexpr int kNumThreads = 18;
 
+    TileRenderer renderer{xml_file, out_dir, kNumThreads};
     const mapnik::box2d<double> world_bbox{-180.0, -90.0, 180.0, 90.0};
-    render_tiles(world_bbox, xml_file, out_dir, 0, 5, 12);
+    renderer.render_tiles(world_bbox, 0, 5);
+
+    const mapnik::box2d<double> bremen_bbox{8.60208, 53.17580, 9.11962, 52.93087};
+    renderer.render_tiles(bremen_bbox, 6, 16);
+
+    renderer.run();
 #if 0
     mapnik::Map map{256, 256};
     mapnik::load_map(map, xml_file, true);
