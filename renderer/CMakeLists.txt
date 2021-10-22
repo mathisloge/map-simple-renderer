@@ -1,0 +1,24 @@
+project(renderer)
+
+find_package(spdlog CONFIG REQUIRED)
+find_package(mapnik CONFIG REQUIRED)
+find_package(Boost REQUIRED COMPONENTS thread)
+mapnik_find_plugin_dir(MAPNIK_PLUGINS_DIR)
+
+add_executable(renderer src/main.cpp)
+configure_file(version.hpp.in ${CMAKE_CURRENT_BINARY_DIR}/version.hpp)
+target_include_directories(renderer PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+target_link_libraries(renderer PRIVATE 
+    mapnik::mapnik
+    Boost::headers
+    Boost::thread
+    spdlog::spdlog
+)
+message(STATUS "plugins path: ${MAPNIK_PLUGINS_DIR}")
+
+set_target_properties(renderer PROPERTIES 
+    CXX_EXTENSIONS OFF 
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+)

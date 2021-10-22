@@ -12,3 +12,6 @@ message(STATUS "GIT_REFSPEC: ${GIT_REFSPEC}")
 include(GNUInstallDirs)
 
 option(BUILD_SHARED_LIBS "build libraries as shared" ON)
+
+find_package(Threads REQUIRED)
+add_subdirectory(renderer)

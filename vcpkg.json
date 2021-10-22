@@ -1,7 +1,24 @@
 {
-    "name": "device-tester",
+    "name": "map-renderer",
     "version-semver": "0.1.0",
     "dependencies": [
-        "spdlog"
+        "spdlog",
+        {
+            "name": "mapnik",
+            "features": [
+                "jpeg",
+                "tiff",
+                "png",
+                "webp",
+                "proj",
+                "cairo",
+                "svg-renderer",
+                "input-gdal",
+                "input-postgis",
+                "input-shape",
+                "viewer"
+            ]
+        },
+        "boost-circular-buffer"
     ]
 }
