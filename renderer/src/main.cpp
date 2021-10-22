@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <boost/timer/timer.hpp>
 #include <mapnik/agg_renderer.hpp>
 #include <mapnik/color_factory.hpp>
 #include <mapnik/datasource_cache.hpp>
@@ -22,7 +23,7 @@ static int long2tilex(double lon, int z)
 
 static int lat2tiley(double lat, int z)
 {
-    const double latrad = lat * kPI / 180.0;
+    const double latrad = lat * DEG_TO_RAD;
     return (int)(floor((1.0 - asinh(tan(latrad)) / kPI) / 2.0 * (1 << z)));
 }
 
@@ -34,9 +35,11 @@ static double tilex2long(int x, int z)
 static double tiley2lat(int y, int z)
 {
     double n = kPI - 2.0 * kPI * y / (double)(1 << z);
-    return 180.0 / kPI * atan(0.5 * (exp(n) - exp(-n)));
+    return RAD_TO_DEG * atan(0.5 * (exp(n) - exp(-n)));
 }
 
+struct Options
+{};
 struct RenderEntry
 {
     fs::path tile_path;
@@ -71,14 +74,18 @@ class RenderThread final
         {
             RenderEntry e;
             queue_.pop_back(&e);
-            try
+            bool retry = true;
+            while (retry)
             {
-                spdlog::info("renderer {} processing {} {} {}", renderer_id_, e.z, e.x, e.y);
-                render_tile(e.tile_path, e.x, e.y, e.z);
-            }
-            catch (const std::exception &ex)
-            {
-                spdlog::error("Error while rendering tile {} {} {}: {}", e.z, e.x, e.y, ex.what());
+                try
+                {
+                    render_tile(e.tile_path, e.x, e.y, e.z);
+                    retry = false;
+                }
+                catch (const std::exception &ex)
+                {
+                    spdlog::error("Error while rendering tile {} {} {}: {}", e.z, e.x, e.y, ex.what());
+                }
             }
         }
         spdlog::info("renderer {} finished", renderer_id_);
@@ -86,6 +93,7 @@ class RenderThread final
 
     void render_tile(const fs::path &tile_uri, int x, int y, int z)
     {
+        boost::timer::cpu_timer t{};
         const std::pair<int, int> p0 = {x, y + 1};
         const std::pair<int, int> p1 = {x + 1, y};
 
@@ -95,7 +103,7 @@ class RenderThread final
         double x1 = tilex2long(p1.first, z);
         double y1 = tiley2lat(p1.second, z);
 
-        spdlog::info("bb({} {} {}) {} {} {} {}", z, x, y, x0, y0, x1, y1);
+        spdlog::info("renderer {}: bb({} {} {}) {} {} {} {}", renderer_id_, z, x, y, x0, y0, x1, y1);
 
         mapnik::proj_transform proj_tr(std::string{"epsg:4326"}, map_.srs());
         proj_tr.forward(x0, y0, zd);
@@ -103,11 +111,20 @@ class RenderThread final
 
         const mapnik::box2d<double> bbox{x0, y0, x1, y1};
         map_.zoom_to_box(bbox);
+        if (map_.buffer_size() < 128)
+            map_.set_buffer_size(128);
 
         mapnik::image_rgba8 buf(map_.width(), map_.height());
         mapnik::agg_renderer<mapnik::image_rgba8> ren{map_, buf};
         ren.apply();
         save_to_file(buf, tile_uri.string(), "png");
+        t.stop();
+        spdlog::info("renderer {}: processed {} {} {} in {}",
+                     renderer_id_,
+                     z,
+                     x,
+                     y,
+                     t.format(4, "%ws wall, %us user + %ss system = %ts CPU (%p%)"));
     }
 
   private:
@@ -207,11 +224,14 @@ int main(int argc, char const *argv[])
     const fs::path out_dir = "D:/dev/map-simple-renderer/build/windows-64-default-release/server/websrc/tiles";
     mapnik::datasource_cache::instance().register_datasources(MAPNIK_PLUGINS_DIR);
     mapnik::freetype_engine::register_fonts("./fonts", true);
-    constexpr int kNumThreads = 12;
+    constexpr int kNumThreads = 9;
 
     TileRenderer renderer{xml_file, out_dir, kNumThreads};
     const mapnik::box2d<double> world_bbox{-180.0, -90.0, 180.0, 90.0};
-    renderer.render_tiles(world_bbox, 0, 5);
+    renderer.render_tiles(world_bbox, 0, 1);
+
+    const mapnik::box2d<double> germany_bbox{6.0, 49.0, 11.0, 56.0};
+    renderer.render_tiles(germany_bbox, 2, 5);
 
     const mapnik::box2d<double> north_west_germany{6, 50, 10, 54};
     renderer.render_tiles(north_west_germany, 6, 16);
