@@ -153,7 +153,7 @@ void handle_request(beast::string_view doc_root, http::request<Body, http::basic
     beast::error_code ec;
     http::file_body::value_type body;
     body.open(path.c_str(), beast::file_mode::scan, ec);
-
+    
     // Handle the case where the file doesn't exist
     if (ec == beast::errc::no_such_file_or_directory)
         return send(not_found(req.target()));

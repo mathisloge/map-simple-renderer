@@ -1,9 +1,5 @@
 #include <filesystem>
-#include <iostream>
 #include <mapnik/agg_renderer.hpp>
-#include <mapnik/cairo/cairo_image_util.hpp>
-#include <mapnik/cairo/cairo_renderer.hpp>
-#include <mapnik/cairo_io.hpp>
 #include <mapnik/color_factory.hpp>
 #include <mapnik/datasource_cache.hpp>
 #include <mapnik/font_engine_freetype.hpp>
@@ -18,52 +14,28 @@ constexpr double kPI = 3.1415926535897932384626433832795028841971693993751058209
 constexpr double DEG_TO_RAD = kPI / 180.;
 constexpr double RAD_TO_DEG = 180. / kPI;
 namespace fs = std::filesystem;
-static void render_tiles(const fs::path &tile_uri, int x, int y, int z);
 
-static double minmax(double a, double b, double c)
+static int long2tilex(double lon, int z)
 {
-    a = std::max(a, b);
-    a = std::min(a, c);
-    return a;
+    return (int)(floor((lon + 180.0) / 360.0 * (1 << z)));
 }
-struct GoogleProjection
+
+static int lat2tiley(double lat, int z)
 {
-    std::vector<double> Bc;
-    std::vector<double> Cc;
-    std::vector<std::pair<double, double>> zc;
-    std::vector<double> Ac;
-    int c = 256;
-    GoogleProjection(int levels = 18)
-    {
-        for (int d = 0; d <= levels; d++)
-        {
-            const double e = c / 2.;
-            Bc.emplace_back(c / 360.0);
-            Cc.emplace_back(c / (2. * kPI));
-            zc.emplace_back(std::pair<double, double>{e, e});
-            Ac.emplace_back(c);
-            c *= 2;
-        }
-    }
+    const double latrad = lat * kPI / 180.0;
+    return (int)(floor((1.0 - asinh(tan(latrad)) / kPI) / 2.0 * (1 << z)));
+}
 
-    std::pair<double, double> fromLLtoPixel(const std::pair<double, double> &ll, int zoom) const
-    {
-        const auto &d = zc[zoom];
-        const double e = round(d.first + ll.first * Bc[zoom]);
-        const double f = minmax(std::sin(DEG_TO_RAD * ll.second), -0.9999, 0.9999);
-        const double g = round(d.second + 0.5 * log((1 + f) / (1 - f)) * -Cc[zoom]);
-        return {e, g};
-    }
+static double tilex2long(int x, int z)
+{
+    return x / (double)(1 << z) * 360.0 - 180.;
+}
 
-    std::pair<double, double> fromPixelToLL(const std::pair<double, double> &px, int zoom) const
-    {
-        const auto &e = zc[zoom];
-        const auto f = (px.first - e.first) / Bc[zoom];
-        const auto g = (px.second - e.second) / -Cc[zoom];
-        const auto h = RAD_TO_DEG * (2 * atan(exp(g)) - 0.5 * kPI);
-        return {f, h};
-    }
-};
+static double tiley2lat(int y, int z)
+{
+    double n = kPI - 2.0 * kPI * y / (double)(1 << z);
+    return 180.0 / kPI * atan(0.5 * (exp(n) - exp(-n)));
+}
 
 struct RenderEntry
 {
@@ -79,7 +51,6 @@ class RenderThread final
         , map_file_{xml_file}
         , queue_{queue}
         , map_{w, h}
-        , tileproj_{16}
 
     {
         render_thread_ = std::thread{std::bind(&RenderThread::render_thread, this)};
@@ -102,11 +73,12 @@ class RenderThread final
             queue_.pop_back(&e);
             try
             {
+                spdlog::info("renderer {} processing {} {} {}", renderer_id_, e.z, e.x, e.y);
                 render_tile(e.tile_path, e.x, e.y, e.z);
             }
             catch (const std::exception &ex)
             {
-                spdlog::error("Error while rendering tile {} {} {}: {}", e.x, e.y, e.z, ex.what();)
+                spdlog::error("Error while rendering tile {} {} {}: {}", e.z, e.x, e.y, ex.what());
             }
         }
         spdlog::info("renderer {} finished", renderer_id_);
@@ -114,18 +86,18 @@ class RenderThread final
 
     void render_tile(const fs::path &tile_uri, int x, int y, int z)
     {
-        spdlog::info("{}: rendering {} {} {}", renderer_id_, z, x, y);
-        const std::pair<double, double> p0 = {x * 256., (y + 1) * 256.};
-        const std::pair<double, double> p1 = {(x + 1.) * 256., y * 256.};
-        const auto l0 = tileproj_.fromPixelToLL(p0, z);
-        const auto l1 = tileproj_.fromPixelToLL(p1, z);
+        const std::pair<int, int> p0 = {x, y + 1};
+        const std::pair<int, int> p1 = {x + 1, y};
+
+        double zd = z;
+        double x0 = tilex2long(p0.first, z);
+        double y0 = tiley2lat(p0.second, z);
+        double x1 = tilex2long(p1.first, z);
+        double y1 = tiley2lat(p1.second, z);
+
+        spdlog::info("bb({} {} {}) {} {} {} {}", z, x, y, x0, y0, x1, y1);
 
         mapnik::proj_transform proj_tr(std::string{"epsg:4326"}, map_.srs());
-        double zd = z;
-        double x0 = l0.first;
-        double y0 = l0.second;
-        double x1 = l1.first;
-        double y1 = l1.second;
         proj_tr.forward(x0, y0, zd);
         proj_tr.forward(x1, y1, zd);
 
@@ -143,7 +115,6 @@ class RenderThread final
     const fs::path map_file_;
     Queue &queue_;
     mapnik::Map map_;
-    GoogleProjection tileproj_;
     std::thread render_thread_;
 };
 struct BboxRenderJob
@@ -162,7 +133,7 @@ class TileRenderer final
   public:
     TileRenderer(const fs::path &xml_file, const fs::path &tile_dir, int num_threads)
         : tile_dir_{tile_dir}
-        , queue{100}
+        , queue{num_threads * 2}
     {
         spdlog::info("creating {} render threads", num_threads);
         for (int i = 0; i < num_threads; i++)
@@ -189,11 +160,6 @@ class TileRenderer final
   private:
     void process(const BboxRenderJob &job)
     {
-        const GoogleProjection gprj{job.max_zoom + 1};
-
-        const std::pair<double, double> ll0{job.bbox[0], job.bbox[3]};
-        const std::pair<double, double> ll1{job.bbox[2], job.bbox[1]};
-
         if (!fs::exists(tile_dir_))
             fs::create_directory(tile_dir_);
 
@@ -204,14 +170,12 @@ class TileRenderer final
             const fs::path z_dir = tile_dir_ / std::to_string(z);
             if (!fs::exists(z_dir))
                 fs::create_directory(z_dir);
-            const auto px0 = gprj.fromLLtoPixel(ll0, z);
-            const auto px1 = gprj.fromLLtoPixel(ll1, z);
-            const int min_x = (px0.first / 256.0);
-            const int max_x = (px1.first / 256.0) + 1;
+            const int min_x = long2tilex(job.bbox.minx(), z);
+            const int max_x = long2tilex(job.bbox.maxx(), z);
             for (int x = min_x; x <= max_x; x++)
             {
-                const int min_y = (px0.second / 256.0);
-                const int max_y = (px1.second / 256.0) + 1;
+                const int min_y = lat2tiley(job.bbox.maxy(), z);
+                const int max_y = lat2tiley(job.bbox.miny(), z);
                 if ((x < 0) || (x >= zpow))
                     continue;
                 const fs::path x_dir = z_dir / std::to_string(x);
@@ -243,32 +207,15 @@ int main(int argc, char const *argv[])
     const fs::path out_dir = "D:/dev/map-simple-renderer/build/windows-64-default-release/server/websrc/tiles";
     mapnik::datasource_cache::instance().register_datasources(MAPNIK_PLUGINS_DIR);
     mapnik::freetype_engine::register_fonts("./fonts", true);
-    constexpr int kNumThreads = 18;
+    constexpr int kNumThreads = 12;
 
     TileRenderer renderer{xml_file, out_dir, kNumThreads};
     const mapnik::box2d<double> world_bbox{-180.0, -90.0, 180.0, 90.0};
     renderer.render_tiles(world_bbox, 0, 5);
 
-    const mapnik::box2d<double> bremen_bbox{8.60208, 53.17580, 9.11962, 52.93087};
-    renderer.render_tiles(bremen_bbox, 6, 16);
+    const mapnik::box2d<double> north_west_germany{6, 50, 10, 54};
+    renderer.render_tiles(north_west_germany, 6, 16);
 
     renderer.run();
-#if 0
-    mapnik::Map map{256, 256};
-    mapnik::load_map(map, xml_file, true);
-
-    map.zoom_to_box(mapnik::box2d<double>(653184, 6567768, 1366216, 7255286));
-
-    mapnik::cairo_surface_ptr image_surface(cairo_image_surface_create(CAIRO_FORMAT_ARGB32, map.width(), map.height()),
-                                            mapnik::cairo_surface_closer());
-    double scale_factor = 1.0;
-    mapnik::cairo_ptr image_context(mapnik::create_context(image_surface));
-    mapnik::cairo_renderer<mapnik::cairo_ptr> png_render(map, image_context, scale_factor);
-    png_render.apply();
-    // we can now write to png with cairo functionality
-    cairo_surface_write_to_png(&*image_surface, "cairo-demo.png");
-    cairo_surface_finish(&*image_surface);
-
-#endif
     return 0;
 }
