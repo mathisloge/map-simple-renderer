@@ -12,6 +12,7 @@
 #include <spdlog/spdlog.h>
 #include "bounded_buffer.hpp"
 #include "version.hpp"
+// https://github.com/openstreetmap/mapnik-stylesheets/blob/master/generate_tiles.py
 
 constexpr double kPI = 3.141592653589793238462643383279502884197169399375105820974944592307816406;
 constexpr double DEG_TO_RAD = kPI / 180.;
@@ -106,7 +107,7 @@ class RenderThread
 
     void render_tile(const fs::path &tile_uri, int x, int y, int z)
     {
-        spdlog::info("rendering {} {} {}", x, y, z);
+        spdlog::info("rendering {} {} {}", z, x, y);
         const std::pair<double, double> p0 = {x * 256., (y + 1) * 256.};
         const std::pair<double, double> p1 = {(x + 1.) * 256., y * 256.};
         const auto l0 = tileproj_.fromPixelToLL(p0, z);
@@ -201,7 +202,7 @@ int main(int argc, char const *argv[])
     mapnik::freetype_engine::register_fonts("./fonts", true);
 
     const mapnik::box2d<double> world_bbox{-180.0, -90.0, 180.0, 90.0};
-    render_tiles(world_bbox, xml_file, out_dir, 0, 5, std::thread::hardware_concurrency());
+    render_tiles(world_bbox, xml_file, out_dir, 0, 5, 12);
 #if 0
     mapnik::Map map{256, 256};
     mapnik::load_map(map, xml_file, true);

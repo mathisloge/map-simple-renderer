@@ -19,6 +19,7 @@
                 "viewer"
             ]
         },
-        "boost-circular-buffer"
+        "boost-circular-buffer",
+        "boost-beast"
     ]
 }

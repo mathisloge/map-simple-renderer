@@ -15,3 +15,4 @@ option(BUILD_SHARED_LIBS "build libraries as shared" ON)
 
 find_package(Threads REQUIRED)
 add_subdirectory(renderer)
+add_subdirectory(server)

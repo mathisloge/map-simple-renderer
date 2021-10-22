@@ -22,3 +22,4 @@ set_target_properties(renderer PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
 )
+file(COPY fonts DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
