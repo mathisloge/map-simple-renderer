@@ -1,7 +1,5 @@
 #pragma once
 
-#cmakedefine MAPNIK_PLUGINS_DIR "@MAPNIK_PLUGINS_DIR@"
-
 namespace renderer
 {
 inline constexpr unsigned int kVersionMajor = @CMAKE_PROJECT_VERSION_MAJOR@;
@@ -10,4 +8,5 @@ inline constexpr unsigned int kVersionPatch = @CMAKE_PROJECT_VERSION_PATCH@;
 inline constexpr const char *kVersion = "@CMAKE_PROJECT_VERSION@";
 inline constexpr const char *kGitRef = "@GIT_REF@";
 inline constexpr const char *kGitRefSpec = "@GIT_REFSPEC@";
+inline constexpr const char *kMAPNIK_PLUGINS_DIR = "@MAPNIK_PLUGINS_DIR@";
 } // namespace renderer
