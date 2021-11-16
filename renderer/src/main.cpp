@@ -10,7 +10,6 @@
 #include <spdlog/spdlog.h>
 #include "bounded_buffer.hpp"
 #include "version.hpp"
-// https://github.com/openstreetmap/mapnik-stylesheets/blob/master/generate_tiles.py
 
 constexpr double kPI = 3.141592653589793238462643383279502884197169399375105820974944592307816406;
 constexpr double DEG_TO_RAD = kPI / 180.;
@@ -231,17 +230,21 @@ int main(int argc, char const *argv[])
     const fs::path out_dir = "D:/dev/map-simple-renderer/build/windows-64-default-release/server/websrc/tiles";
     mapnik::datasource_cache::instance().register_datasources(renderer::kMAPNIK_PLUGINS_DIR);
     mapnik::freetype_engine::register_fonts("./fonts", true);
-    constexpr int kNumThreads = 8;
+    constexpr int kNumThreads = 2;
 
     TileRenderer renderer{xml_file, out_dir, kNumThreads};
-    const mapnik::box2d<double> world_bbox{-180.0, -90.0, 180.0, 90.0};
-    renderer.render_tiles(world_bbox, 0, 1);
-
-    const mapnik::box2d<double> germany_bbox{6.0, 49.0, 11.0, 56.0};
-    renderer.render_tiles(germany_bbox, 2, 5);
 
     const mapnik::box2d<double> north_west_germany{6, 50, 10, 54};
-    renderer.render_tiles(north_west_germany, 6, 16);
+    renderer.render_tiles(north_west_germany, 0, 13);
+
+    const mapnik::box2d<double> germany_bbox{5., 55., 15., 47.};
+    renderer.render_tiles(germany_bbox, 0, 9);
+
+    const mapnik::box2d<double> europe_bbox{-12., 59., 25., 37.};
+    renderer.render_tiles(europe_bbox, 0, 5);
+
+    const mapnik::box2d<double> world_bbox{-180.0, -90.0, 180.0, 90.0};
+    renderer.render_tiles(world_bbox, 0, 4);
 
     renderer.run();
     return 0;
